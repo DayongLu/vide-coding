@@ -358,7 +358,7 @@ def create_bill_payment(confirmation_token: str, user_confirmed: bool) -> str:
                 "created_at": bill_payment.get("MetaData", {}).get("CreateTime"),
             },
             "message": (
-                f"Payment of ${payload.get('payment_amount')} to "
+                f"Payment of ${payload.get('payment_amount'):,.2f} to "
                 f"{payload.get('vendor_name')} was recorded successfully in QuickBooks "
                 f"(payment ID: {bill_payment.get('Id')})."
             ),

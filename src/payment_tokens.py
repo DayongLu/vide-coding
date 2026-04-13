@@ -7,6 +7,10 @@ payment payload so the execution step does not need to re-validate.
 
 Token format: ``prev_{uuid4_hex[:12]}_{unix_timestamp}``
 Example:      ``prev_a1b2c3d4e5f6_1744684800``
+
+Note: The in-memory store is NOT thread-safe. This is fine for stdio
+transport (single-threaded) but requires a threading.Lock if the MCP
+server is run with SSE transport under concurrent requests.
 """
 
 import time
