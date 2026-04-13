@@ -200,3 +200,67 @@ TOOLS: list[dict[str, Any]] = [
 
 # Convenience set for parity checks (e.g. tests, MCP server sync assertions).
 TOOL_NAMES: frozenset[str] = frozenset(t["name"] for t in TOOLS)
+
+
+def execute_tool(tool_name: str, tool_input: dict) -> str:
+    """Dispatch a tool call to the appropriate qbo_client function.
+
+    This is the synchronous dispatcher used by app.py, chat.py, and the
+    async API layer (wrapped in asyncio.to_thread). Returns a JSON string
+    in all cases — errors are serialised as {"error": "..."} rather than
+    raised so that the agent loop can continue.
+
+    Args:
+        tool_name: Name of the tool to execute.
+        tool_input: Tool input parameters from the Anthropic API.
+
+    Returns:
+        JSON string result.
+    """
+    import json
+    import qbo_client
+
+    try:
+        if tool_name == "get_company_info":
+            result = qbo_client.get_company_info()
+        elif tool_name == "get_vendors":
+            result = qbo_client.get_vendors(tool_input.get("max_results", 100))
+        elif tool_name == "get_bills":
+            result = qbo_client.get_bills(tool_input.get("max_results", 100))
+        elif tool_name == "get_unpaid_bills":
+            result = qbo_client.get_unpaid_bills()
+        elif tool_name == "get_bill_payments":
+            result = qbo_client.get_bill_payments(tool_input.get("max_results", 50))
+        elif tool_name == "get_accounts":
+            result = qbo_client.get_accounts(tool_input.get("account_type"))
+        elif tool_name == "get_invoices":
+            result = qbo_client.get_invoices(tool_input.get("max_results", 50))
+        elif tool_name == "get_customers":
+            result = qbo_client.get_customers(tool_input.get("max_results", 100))
+        elif tool_name == "get_profit_and_loss":
+            result = qbo_client.get_profit_and_loss()
+        elif tool_name == "get_balance_sheet":
+            result = qbo_client.get_balance_sheet()
+        elif tool_name == "get_bill_by_id":
+            result = qbo_client.get_bill_by_id(tool_input["bill_id"])
+        elif tool_name == "preview_bill_payment":
+            result = qbo_client.preview_bill_payment(
+                bill_id=tool_input["bill_id"],
+                payment_account_id=tool_input["payment_account_id"],
+                amount=tool_input.get("amount"),
+                payment_date=tool_input.get("payment_date"),
+                memo=tool_input.get("memo", ""),
+            )
+        elif tool_name == "create_bill_payment":
+            import payment_tokens
+            token = tool_input["confirmation_token"]
+            user_confirmed = tool_input["user_confirmed"]
+            if not user_confirmed:
+                return json.dumps({"error": "Payment not confirmed by user."})
+            payload = payment_tokens.consume_token(token)
+            result = qbo_client.create_bill_payment(payload)
+        else:
+            result = {"error": f"Unknown tool: {tool_name}"}
+        return json.dumps(result, indent=2, default=str)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
