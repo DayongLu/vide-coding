@@ -13,6 +13,7 @@ transport (single-threaded) but requires a threading.Lock if the MCP
 server is run with SSE transport under concurrent requests.
 """
 
+import threading
 import time
 import uuid
 from typing import Any
@@ -29,6 +30,12 @@ TOKEN_PREFIX: str = "prev"
 # ---------------------------------------------------------------------------
 
 _store: dict[str, dict[str, Any]] = {}
+
+# Lock protecting all reads and writes to _store.
+# Required because the FastAPI API layer dispatches tool calls via
+# asyncio.to_thread(), meaning generate_token and consume_token can be
+# called from worker threads concurrently.
+_lock: threading.Lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Custom exceptions
@@ -65,11 +72,12 @@ def generate_token(payment_payload: dict) -> str:
     """
     now = time.time()
     token = f"{TOKEN_PREFIX}_{uuid.uuid4().hex[:12]}_{int(now)}"
-    _store[token] = {
-        "payload": payment_payload,
-        "expires_at": now + TOKEN_TTL,
-        "used": False,
-    }
+    with _lock:
+        _store[token] = {
+            "payload": payment_payload,
+            "expires_at": now + TOKEN_TTL,
+            "used": False,
+        }
     return token
 
 
@@ -89,18 +97,19 @@ def consume_token(token: str) -> dict:
         TokenExpiredError: Token TTL has elapsed.
         TokenAlreadyUsedError: Token was already consumed by a previous call.
     """
-    entry = _store.get(token)
-    if entry is None:
-        raise TokenNotFoundError(f"Token not found: {token}")
+    with _lock:
+        entry = _store.get(token)
+        if entry is None:
+            raise TokenNotFoundError(f"Token not found: {token}")
 
-    if time.time() >= entry["expires_at"]:
-        raise TokenExpiredError(f"Token expired: {token}")
+        if time.time() >= entry["expires_at"]:
+            raise TokenExpiredError(f"Token expired: {token}")
 
-    if entry["used"]:
-        raise TokenAlreadyUsedError(f"Token already used: {token}")
+        if entry["used"]:
+            raise TokenAlreadyUsedError(f"Token already used: {token}")
 
-    entry["used"] = True
-    return entry["payload"]
+        entry["used"] = True
+        return entry["payload"]
 
 
 def clear_store() -> None:
@@ -108,4 +117,5 @@ def clear_store() -> None:
 
     Intended for use in tests only.
     """
-    _store.clear()
+    with _lock:
+        _store.clear()

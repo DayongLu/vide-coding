@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
@@ -188,8 +189,17 @@ async def run_agent_turn(
                 tool_input = tu["input"]
                 tools_called.append(tool_name)
 
-                logger.info("Dispatching tool: %s", tool_name)
+                logger.info("tool_start name=%s conv=%s", tool_name, conv_id)
+                t0 = time.monotonic()
                 result_str = await asyncio.to_thread(execute_tool, tool_name, tool_input)
+                duration_ms = round((time.monotonic() - t0) * 1000, 1)
+                logger.info(
+                    "tool_end name=%s conv=%s duration_ms=%s success=%s",
+                    tool_name,
+                    conv_id,
+                    duration_ms,
+                    not result_str.startswith('{"error"'),
+                )
 
                 summary = result_str[:100] if len(result_str) > 100 else result_str
                 yield _sse("tool_end", {"tool": tool_name, "summary": summary})

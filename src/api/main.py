@@ -20,20 +20,10 @@ from fastapi import FastAPI, Request, Response
 
 import api.db as db_module
 from api.errors import register_exception_handlers
+from api.logging_config import configure as configure_logging
 from api.routers import conversations, health
 
 logger = logging.getLogger(__name__)
-
-
-def _configure_logging() -> None:
-    """Configure stdlib logging based on LOG_LEVEL and LOG_FORMAT env vars."""
-    level = os.getenv("LOG_LEVEL", "INFO").upper()
-    fmt = os.getenv("LOG_FORMAT", "text")
-    if fmt == "json":
-        log_format = '{"time":"%(asctime)s","level":"%(levelname)s","name":"%(name)s","message":"%(message)s"}'
-    else:
-        log_format = "%(asctime)s %(levelname)s %(name)s: %(message)s"
-    logging.basicConfig(level=level, format=log_format)
 
 
 def create_app(db_path: Path | None = None) -> FastAPI:
@@ -47,7 +37,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     Returns:
         Configured FastAPI instance.
     """
-    _configure_logging()
+    configure_logging()
 
     resolved_db_path = db_path or Path(
         os.getenv("DB_PATH", "data/conversations.db")

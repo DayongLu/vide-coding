@@ -203,3 +203,67 @@ def test_clear_store_leaves_store_empty():
 def test_token_ttl_constant_is_300():
     """TOKEN_TTL must be 300 seconds as specified."""
     assert TOKEN_TTL == 300
+
+
+# ---------------------------------------------------------------------------
+# Thread safety
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_generate_and_consume_no_corruption():
+    """generate_token + consume_token under concurrent threads must not corrupt state."""
+    import threading
+
+    payment_tokens.clear_store()
+    errors: list[Exception] = []
+    consumed: list[str] = []
+    lock = threading.Lock()
+
+    def worker():
+        try:
+            payload = {"bill_id": "42", "payment_amount": 100.0}
+            token = payment_tokens.generate_token(payload)
+            result = payment_tokens.consume_token(token)
+            with lock:
+                consumed.append(result["bill_id"])
+        except Exception as exc:
+            with lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == [], f"Errors during concurrent access: {errors}"
+    assert len(consumed) == 20
+    assert all(b == "42" for b in consumed)
+
+
+def test_concurrent_consume_same_token_only_one_succeeds():
+    """Only one thread should successfully consume a given token."""
+    import threading
+
+    payment_tokens.clear_store()
+    payload = {"bill_id": "99", "payment_amount": 50.0}
+    token = payment_tokens.generate_token(payload)
+
+    successes: list[int] = []
+    lock = threading.Lock()
+
+    def try_consume():
+        try:
+            payment_tokens.consume_token(token)
+            with lock:
+                successes.append(1)
+        except (payment_tokens.TokenAlreadyUsedError, payment_tokens.TokenExpiredError):
+            pass
+
+    threads = [threading.Thread(target=try_consume) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(successes) == 1, f"Expected 1 success, got {len(successes)}"
