@@ -16,9 +16,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
 
 import api.db as db_module
+
+# Load environment variables from .env
+load_dotenv()
+
 from api.errors import register_exception_handlers
 from api.logging_config import configure as configure_logging
 from api.routers import conversations, health
