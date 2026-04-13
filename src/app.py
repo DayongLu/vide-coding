@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from flask import Flask, render_template, request, jsonify
 
 import qbo_client
-from tools import TOOLS
+from tools import TOOLS, execute_tool
 
 load_dotenv()
 
@@ -40,36 +40,6 @@ You DO NOT:
 Today's date is 2026-04-12.
 
 When the user asks something beyond your scope, provide the factual information and suggest they consult their accountant."""
-
-
-def execute_tool(tool_name, tool_input):
-    """Execute a tool call and return the result."""
-    try:
-        if tool_name == "get_company_info":
-            result = qbo_client.get_company_info()
-        elif tool_name == "get_vendors":
-            result = qbo_client.get_vendors(tool_input.get("max_results", 100))
-        elif tool_name == "get_bills":
-            result = qbo_client.get_bills(tool_input.get("max_results", 100))
-        elif tool_name == "get_unpaid_bills":
-            result = qbo_client.get_unpaid_bills()
-        elif tool_name == "get_bill_payments":
-            result = qbo_client.get_bill_payments(tool_input.get("max_results", 50))
-        elif tool_name == "get_accounts":
-            result = qbo_client.get_accounts(tool_input.get("account_type"))
-        elif tool_name == "get_invoices":
-            result = qbo_client.get_invoices(tool_input.get("max_results", 50))
-        elif tool_name == "get_customers":
-            result = qbo_client.get_customers(tool_input.get("max_results", 100))
-        elif tool_name == "get_profit_and_loss":
-            result = qbo_client.get_profit_and_loss()
-        elif tool_name == "get_balance_sheet":
-            result = qbo_client.get_balance_sheet()
-        else:
-            result = {"error": f"Unknown tool: {tool_name}"}
-        return json.dumps(result, indent=2, default=str)
-    except Exception as e:
-        return json.dumps({"error": str(e)})
 
 
 # Store conversation per session (simple in-memory for POC)

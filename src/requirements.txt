@@ -1,4 +1,8 @@
+anthropic>=0.20.0
 python-dotenv
 requests
 intuitlib
 mcp
+fastapi
+uvicorn[standard]
+pydantic>=2.0
