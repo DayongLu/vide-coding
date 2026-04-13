@@ -4,36 +4,18 @@ Finance Agent POC - Chat interface that answers questions using QuickBooks data.
 
 import json
 import os
+import sys
 
 import anthropic
 from dotenv import load_dotenv
 
+sys.path.append(os.path.dirname(__file__))
+
 import qbo_client
+from api.system_prompt import build_system_prompt
 from tools import TOOLS, execute_tool
 
 load_dotenv()
-
-SYSTEM_PROMPT = """You are an accounts payable assistant for a small business. You help the user understand their QuickBooks data by answering questions in plain language.
-
-You have access to tools that query QuickBooks Online. Use them to answer the user's questions accurately.
-
-When presenting financial data:
-- Format dollar amounts clearly (e.g., $1,234.56)
-- Summarize when there's a lot of data — don't dump raw JSON
-- Highlight what's important (overdue bills, large amounts, etc.)
-- Be concise but thorough
-
-You HELP the user by:
-- Answering questions about their vendors, bills, payments, and accounts
-- Flagging anomalies (duplicates, unusual amounts, overdue items)
-- Summarizing financial status
-
-You DO NOT:
-- Give tax advice
-- Recommend financial strategies
-- Make payment decisions on behalf of the user
-
-When the user asks something beyond your scope, provide the factual information and suggest they consult their accountant."""
 
 
 def chat():
@@ -62,7 +44,7 @@ def chat():
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=4096,
-            system=SYSTEM_PROMPT,
+            system=build_system_prompt(),
             tools=TOOLS,
             messages=messages,
         )
@@ -93,7 +75,7 @@ def chat():
             response = client.messages.create(
                 model="claude-sonnet-4-20250514",
                 max_tokens=4096,
-                system=SYSTEM_PROMPT,
+                system=build_system_prompt(),
                 tools=TOOLS,
                 messages=messages,
             )
