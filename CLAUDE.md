@@ -102,6 +102,13 @@ python -m pytest tests/                                # Run tests
 - New features and bug fixes must include corresponding tests.
 - Integration tests live in the `tests/` directory.
 
+## Git Branching and Pull Requests
+
+- **Never push directly to `main`.** All changes must go through a pull request.
+- Create a feature branch for every piece of work: `git checkout -b <type>/<short-description>` (e.g., `feat/bill-payment`, `fix/token-expiry`).
+- Open a PR with `gh pr create` and wait for review before merging.
+- `main` must always be in a releasable state — direct pushes bypass review and are not allowed.
+
 ## Git Commit Messages
 
 Follow [Conventional Commits](https://www.conventionalcommits.org/) syntax:
