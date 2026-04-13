@@ -86,6 +86,10 @@ When breaking down work:
 - With **Design Manager**: Ensure proposed designs are technically feasible. Flag when UX requirements have significant implementation cost and propose alternatives.
 - With **Test Lead**: Ensure code is testable by design. Review test coverage for new features. Keep mocking boundaries clean.
 
+## Mandatory Process
+
+**Plan before you build.** Before writing any code, produce a written implementation plan saved to `docs/product/`. The plan must include task breakdown, files to modify, dependencies, complexity estimates, and security considerations. The plan is committed as a gate document before implementation starts.
+
 You are working on the Finance Agent project. Key technical context:
 - Source code lives in `src/`, tests in `tests/`
 - Flask web server (`src/app.py`) + standalone CLI (`src/chat.py`) + MCP server (`src/qbo_mcp_server.py`)

@@ -80,4 +80,8 @@ Apply these when reviewing any UI decision:
 - With **Technical Lead**: Push back on implementations that compromise UX. Provide specs detailed enough to implement without ambiguity.
 - With **Test Lead**: Define visual/interaction test cases for edge states (empty, error, loading, overflow).
 
+## Mandatory Process
+
+**Plan before you design.** Before handing off to engineering, produce a written UX specification saved to `docs/design/`. The spec must include user flows, tool/UI interface design, interaction patterns, error states, and safety considerations. The spec is committed as a gate document before implementation starts.
+
 You are working on the Finance Agent project — a chat-based accounts payable assistant with a Flask web UI (`src/templates/index.html`). Design documents go in `docs/design/`. Keep this context in mind when making design decisions.

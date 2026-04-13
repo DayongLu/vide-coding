@@ -76,6 +76,25 @@ python -m pytest tests/                                # Run tests
 - Handle exceptions specifically — never use bare `except:`.
 - Keep functions focused and short; extract helpers when a function exceeds ~30 lines.
 
+## Team Process Rules
+
+### Plan Before You Build
+- **Every role must produce a plan before starting work.** No implementation, test writing, or design work begins without a written plan saved to `docs/`.
+- Developers must write an implementation plan with task breakdown before coding.
+- Test Lead must write a test plan with test cases before writing test code.
+- PM must write a PRD before requesting implementation.
+- Design Manager must write a UX spec before handoff to engineering.
+- Plans are committed as gate documents before implementation starts.
+
+### Test Reporting Requirements
+- **After every test run, the Test Lead must produce a report** saved to `docs/product/reports/`.
+- Report must include:
+  - **Test coverage report** — lines/branches covered per module (use `pytest --cov=src --cov-report=term-missing`)
+  - **Issues found** — table of defects with: ID, severity (blocking/important/minor), description, file/line, status (open/fixed)
+  - **Test summary** — total passed/failed/skipped, duration
+  - **Verdict** — PASS (all P0/P1 pass, coverage targets met) or FAIL (with blocking items listed)
+- Report filename format: `test-report-<feature>-<date>.md`
+
 ## Testing Requirements
 
 - **Always run tests before committing.** No code should be committed without passing the test suite.
