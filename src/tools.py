@@ -1,12 +1,12 @@
 """
 Shared Anthropic tool definitions for the Finance Agent.
 
-This is the single source of truth for all 13 QBO tools exposed to Claude.
+This is the single source of truth for all 17 QBO tools exposed to Claude.
 Both app.py and chat.py import TOOLS from here. The MCP server
 (qbo_mcp_server.py) derives its tool set from the same qbo_client functions,
 so any addition there must be mirrored here.
 
-Tool count: 10 read-only + 3 bill payment write tools = 13 total.
+Tool count: 10 read-only + 3 bill payment write tools + 4 email invoice tools = 17 total.
 """
 
 from typing import Any
@@ -196,6 +196,94 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["confirmation_token", "user_confirmed"],
         },
     },
+    # ------------------------------------------------------------------
+    # Email invoice ingestion tools
+    # ------------------------------------------------------------------
+    {
+        "name": "scan_emails_for_invoices",
+        "description": (
+            "Scan the Gmail inbox for unread emails that contain invoices "
+            "(PDF/image attachments or invoice-related subject lines). "
+            "Parses attachments using AI and adds them to the invoice review queue. "
+            "Returns the number of new invoices found."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "max_emails": {
+                    "type": "integer",
+                    "description": "Maximum number of emails to scan. Default 20.",
+                }
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_invoice_queue",
+        "description": (
+            "List invoices in the review queue extracted from emails. "
+            "Shows vendor name, amount, due date, vendor match status, and current status. "
+            "Use this to see what invoices are pending approval before creating QBO bills."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: 'pending', 'approved', 'rejected', 'created'. Omit for all.",
+                }
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "approve_invoice",
+        "description": (
+            "Approve a queued invoice and create a Bill in QuickBooks Online. "
+            "ONLY works when the vendor already exists in QBO. "
+            "Presents the bill details and requires the user to confirm before creating. "
+            "This is the final step in the email invoice → QBO bill workflow."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "invoice_queue_id": {
+                    "type": "string",
+                    "description": "ID of the invoice in the queue (from get_invoice_queue).",
+                },
+                "expense_account_id": {
+                    "type": "string",
+                    "description": "QBO Account ID for expense categorization (use get_accounts to find).",
+                },
+                "user_confirmed": {
+                    "type": "boolean",
+                    "description": "Must be true to create the bill. Pass false to preview only.",
+                },
+            },
+            "required": ["invoice_queue_id", "expense_account_id", "user_confirmed"],
+        },
+    },
+    {
+        "name": "reject_invoice",
+        "description": (
+            "Reject a queued invoice and mark it as skipped. "
+            "No bill will be created. Use this when an invoice should not be entered into QBO."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "invoice_queue_id": {
+                    "type": "string",
+                    "description": "ID of the invoice in the queue (from get_invoice_queue).",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional reason for rejection (stored in the queue for audit).",
+                },
+            },
+            "required": ["invoice_queue_id"],
+        },
+    },
 ]
 
 # Convenience set for parity checks (e.g. tests, MCP server sync assertions).
@@ -259,6 +347,35 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
                 return json.dumps({"error": "Payment not confirmed by user."})
             payload = payment_tokens.consume_token(token)
             result = qbo_client.create_bill_payment(payload)
+
+        # ------------------------------------------------------------------
+        # Email invoice ingestion tools
+        # ------------------------------------------------------------------
+        elif tool_name == "scan_emails_for_invoices":
+            from invoice_scanner import scan_emails_for_invoices
+            max_emails = tool_input.get("max_emails", 20)
+            result = scan_emails_for_invoices(max_emails=max_emails)
+
+        elif tool_name == "get_invoice_queue":
+            from invoice_scanner import get_invoice_queue
+            status_filter = tool_input.get("status")
+            result = get_invoice_queue(status=status_filter)
+
+        elif tool_name == "approve_invoice":
+            from invoice_scanner import approve_invoice
+            result = approve_invoice(
+                invoice_queue_id=tool_input["invoice_queue_id"],
+                expense_account_id=tool_input["expense_account_id"],
+                user_confirmed=tool_input["user_confirmed"],
+            )
+
+        elif tool_name == "reject_invoice":
+            from invoice_scanner import reject_invoice
+            result = reject_invoice(
+                invoice_queue_id=tool_input["invoice_queue_id"],
+                reason=tool_input.get("reason", ""),
+            )
+
         else:
             result = {"error": f"Unknown tool: {tool_name}"}
         return json.dumps(result, indent=2, default=str)

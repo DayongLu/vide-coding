@@ -9,19 +9,28 @@ Usage:
     python3.13 src/api/main.py
 """
 
+import asyncio
 import logging
 import os
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response
+
+# Ensure src/ is on the path so invoice_scanner et al. can be imported
+sys.path.insert(0, os.path.dirname(__file__) + "/..")
+
+load_dotenv()
 
 import api.db as db_module
 from api.errors import register_exception_handlers
 from api.logging_config import configure as configure_logging
 from api.routers import conversations, health
+from api.routers.invoices import router as invoices_router
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +57,31 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         db_module.init_db(resolved_db_path)
         logger.info("Database initialised at %s", resolved_db_path)
+
+        # Start background email polling if Gmail is configured
+        scheduler_task = None
+        gmail_token_file = os.getenv("GMAIL_TOKEN_FILE", "src/gmail_tokens.json")
+        poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL_MINUTES", "15"))
+        if Path(gmail_token_file).exists():
+            logger.info(
+                "Gmail configured — starting email poller (interval=%dm)", poll_interval
+            )
+            scheduler_task = asyncio.create_task(
+                _email_poll_loop(interval_minutes=poll_interval)
+            )
+        else:
+            logger.info(
+                "GMAIL_TOKEN_FILE not found at %s — email polling disabled", gmail_token_file
+            )
+
         yield
+
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+            try:
+                await scheduler_task
+            except asyncio.CancelledError:
+                pass
 
     app = FastAPI(
         title="Finance Agent API",
@@ -84,8 +117,30 @@ def create_app(db_path: Path | None = None) -> FastAPI:
 
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(conversations.router, prefix="/api/v1")
+    app.include_router(invoices_router, prefix="/api/v1")
 
     return app
+
+
+async def _email_poll_loop(interval_minutes: int) -> None:
+    """Background coroutine: poll Gmail for invoice emails on a fixed interval.
+
+    Args:
+        interval_minutes: Seconds between each scan cycle.
+    """
+    interval_seconds = interval_minutes * 60
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            import invoice_scanner
+            result = invoice_scanner.scan_emails_for_invoices()
+            logger.info(
+                "Email poll complete: added=%d skipped=%d",
+                result.get("invoices_added", 0),
+                result.get("invoices_skipped", 0),
+            )
+        except Exception:
+            logger.exception("Error in background email poll")
 
 
 app = create_app()
