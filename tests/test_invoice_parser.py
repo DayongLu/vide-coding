@@ -126,3 +126,39 @@ def test_parse_invoice_coerces_total_amount_to_float():
 
     # After stripping comma the coercion will fail → fallback to 0.0
     assert isinstance(result["total_amount"], float)
+
+
+# ---------------------------------------------------------------------------
+# Provider routing tests
+# ---------------------------------------------------------------------------
+
+
+def test_call_llm_routes_to_gemini():
+    """LLM_PROVIDER=gemini delegates to _call_gemini."""
+    with patch("invoice_parser._call_gemini", return_value=_VALID_JSON) as mock_gemini:
+        with patch.dict("os.environ", {"LLM_PROVIDER": "gemini"}):
+            result = invoice_parser.parse_invoice("some invoice text", "text/plain")
+
+    mock_gemini.assert_called_once_with("some invoice text", "text/plain")
+    assert result["vendor_name"] == "Acme Corp"
+    assert result["total_amount"] == 1200.0
+
+
+def test_call_llm_routes_to_openai():
+    """LLM_PROVIDER=openai delegates to _call_openai."""
+    with patch("invoice_parser._call_openai", return_value=_VALID_JSON) as mock_openai:
+        with patch.dict("os.environ", {"LLM_PROVIDER": "openai"}):
+            result = invoice_parser.parse_invoice("some invoice text", "text/plain")
+
+    mock_openai.assert_called_once_with("some invoice text", "text/plain")
+    assert result["vendor_name"] == "Acme Corp"
+
+
+def test_parse_invoice_openai_pdf_fallback():
+    """OpenAI provider is called with application/pdf mime type for PDFs."""
+    with patch("invoice_parser._call_openai", return_value=_VALID_JSON) as mock_openai:
+        with patch.dict("os.environ", {"LLM_PROVIDER": "openai"}):
+            invoice_parser.parse_invoice(b"%PDF fake", "application/pdf")
+
+    args = mock_openai.call_args[0]
+    assert args[1] == "application/pdf"
