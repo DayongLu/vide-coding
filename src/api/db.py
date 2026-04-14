@@ -27,6 +27,27 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation
     ON messages(conversation_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS email_invoices (
+    id              TEXT PRIMARY KEY,
+    email_id        TEXT NOT NULL,
+    subject         TEXT,
+    from_address    TEXT,
+    received_at     TEXT,
+    attachment_name TEXT,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    extracted_data  TEXT,
+    vendor_id       TEXT,
+    vendor_name     TEXT,
+    bill_id         TEXT,
+    created_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_invoices_status
+    ON email_invoices(status, created_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_email_invoices_email_id
+    ON email_invoices(email_id);
 """
 
 

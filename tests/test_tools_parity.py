@@ -4,6 +4,10 @@ in src/qbo_mcp_server.py — no live QBO calls required.
 
 Uses AST parsing to extract tool names from the MCP server so this test
 never imports the mcp package (which requires Python 3.10+ and a venv).
+
+NOTE: The four email invoice tools (scan_emails_for_invoices, get_invoice_queue,
+approve_invoice, reject_invoice) are chat-agent-only tools that require Gmail
+auth and SQLite state. They are intentionally NOT registered in qbo_mcp_server.py.
 """
 
 import ast
@@ -37,12 +41,27 @@ def _extract_mcp_tool_names() -> set[str]:
     return names
 
 
-def test_tool_names_match_mcp_server() -> None:
-    """Every tool in qbo_mcp_server.py must appear in tools.TOOL_NAMES and vice versa."""
-    mcp_names = _extract_mcp_tool_names()
+# Tools that exist in tools.py but are intentionally absent from the MCP server.
+# These require Gmail auth + SQLite state and are chat-agent-only.
+_CHAT_ONLY_TOOLS = frozenset({
+    "scan_emails_for_invoices",
+    "get_invoice_queue",
+    "approve_invoice",
+    "reject_invoice",
+})
 
-    only_in_mcp = mcp_names - TOOL_NAMES
-    only_in_tools = TOOL_NAMES - mcp_names
+
+def test_tool_names_match_mcp_server() -> None:
+    """QBO tools in qbo_mcp_server.py must appear in tools.TOOL_NAMES and vice versa.
+
+    Chat-agent-only tools (email invoice ingestion) are excluded from this check
+    because they are intentionally not registered in the MCP server.
+    """
+    mcp_names = _extract_mcp_tool_names()
+    qbo_tool_names = TOOL_NAMES - _CHAT_ONLY_TOOLS
+
+    only_in_mcp = mcp_names - qbo_tool_names
+    only_in_tools = qbo_tool_names - mcp_names
 
     assert not only_in_mcp, (
         f"Tools in MCP server but missing from tools.py: {only_in_mcp}"
@@ -71,7 +90,7 @@ def test_tool_names_are_unique() -> None:
 
 
 def test_total_tool_count() -> None:
-    """Expect exactly 13 tools: 10 read-only + 3 bill payment write tools."""
+    """Expect exactly 17 tools: 10 read-only + 3 bill payment + 4 email invoice tools."""
     from tools import TOOLS
 
-    assert len(TOOLS) == 13, f"Expected 13 tools, got {len(TOOLS)}"
+    assert len(TOOLS) == 17, f"Expected 17 tools, got {len(TOOLS)}"

@@ -6,6 +6,7 @@ import datetime
 import json
 import logging
 import os
+import re
 
 import requests
 from dotenv import load_dotenv
@@ -53,6 +54,14 @@ class DuplicatePaymentError(Exception):
 
 class QBOAPIError(Exception):
     """Raised when QBO returns an unexpected HTTP error on a write operation."""
+
+
+class VendorNotFoundError(Exception):
+    """Raised when no matching vendor is found in QBO."""
+
+
+class BillCreationError(Exception):
+    """Raised when QBO rejects a bill creation request."""
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +337,133 @@ def get_bill_by_id(bill_id: str, tokens: dict | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Vendor lookup
+# ---------------------------------------------------------------------------
+
+
+def find_vendor_by_name(name: str, tokens: dict | None = None) -> dict | None:
+    """Find a QBO vendor by display name using case-insensitive fuzzy matching.
+
+    First attempts an exact case-insensitive match. Falls back to a
+    substring match if no exact match is found.
+
+    Args:
+        name: Vendor name to search for (as extracted from an invoice).
+        tokens: Optional OAuth token dict.
+
+    Returns:
+        Vendor dict if found, or None if no match.
+    """
+    vendors = get_vendors(tokens=tokens)
+    # Normalise: lowercase, strip whitespace and common legal suffixes
+    _SUFFIXES = re.compile(
+        r"\s*\b(inc\.?|llc\.?|ltd\.?|co\.?|corp\.?|incorporated|limited)\b\s*$",
+        re.IGNORECASE,
+    )
+    name_norm = _SUFFIXES.sub("", name.lower().strip()).strip()
+
+    for vendor in vendors:
+        display = vendor.get("DisplayName", "")
+        display_norm = _SUFFIXES.sub("", display.lower().strip()).strip()
+        if display_norm == name_norm:
+            return vendor
+
+    # Partial match fallback
+    for vendor in vendors:
+        display = vendor.get("DisplayName", "").lower()
+        if name_norm and name_norm in display:
+            return vendor
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Bill creation
+# ---------------------------------------------------------------------------
+
+
+def create_bill(
+    vendor_id: str,
+    line_items: list[dict],
+    due_date: str,
+    expense_account_id: str,
+    invoice_number: str = "",
+    memo: str = "",
+    tokens: dict | None = None,
+) -> dict:
+    """Create a new Bill in QuickBooks Online.
+
+    Args:
+        vendor_id: QBO Vendor ID.
+        line_items: List of dicts with keys ``description`` (str) and
+            ``amount`` (float).
+        due_date: Due date as an ISO 8601 string (YYYY-MM-DD).
+        expense_account_id: QBO Account ID for expense categorization
+            (must be an Expense-type account).
+        invoice_number: Optional vendor invoice / reference number.
+        memo: Optional private note (max 4000 chars).
+        tokens: Optional OAuth token dict.
+
+    Returns:
+        The created Bill dict from QBO.
+
+    Raises:
+        ValueError: If line_items is empty or any amount is non-positive.
+        BillCreationError: If QBO rejects the request.
+    """
+    if not line_items:
+        raise ValueError("At least one line item is required to create a bill.")
+
+    qbo_lines = []
+    for item in line_items:
+        amount = float(item.get("amount", 0))
+        if amount <= 0:
+            raise ValueError(f"Line item amount must be positive, got {amount}.")
+        qbo_lines.append(
+            {
+                "Amount": amount,
+                "DetailType": "AccountBasedExpenseLineDetail",
+                "AccountBasedExpenseLineDetail": {
+                    "AccountRef": {"value": expense_account_id},
+                },
+                "Description": item.get("description", ""),
+            }
+        )
+
+    body: dict = {
+        "VendorRef": {"value": vendor_id},
+        "Line": qbo_lines,
+        "DueDate": due_date,
+        "PrivateNote": memo[:4000] if memo else "",
+    }
+    if invoice_number:
+        body["DocNumber"] = invoice_number
+
+    logger.info(
+        "Creating bill: vendor_id=%s lines=%d due=%s invoice_number=%s",
+        vendor_id,
+        len(qbo_lines),
+        due_date,
+        invoice_number,
+    )
+
+    try:
+        data = qbo_post("bill", body, tokens)
+    except requests.HTTPError as exc:
+        detail = exc.response.text if exc.response is not None else ""
+        raise BillCreationError(detail) from exc
+
+    result = data["Bill"]
+    logger.info(
+        "Bill created: bill_id=%s vendor_id=%s total=%s",
+        result.get("Id"),
+        vendor_id,
+        result.get("TotalAmt"),
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Payment preview
 # ---------------------------------------------------------------------------
 
@@ -465,19 +601,21 @@ def create_bill_payment(payment_payload: dict, tokens: dict | None = None) -> di
             the past 24 hours.
         QBOAPIError: QBO returned an unexpected HTTP error.
     """
-    # Duplicate detection: check last 50 payments for same bill in past 24h
+    # Duplicate detection: check last 50 payments for same bill in past 24h.
+    # QBO returns TxnDate as a date-only string (YYYY-MM-DD), so compare
+    # against a date cutoff (not a datetime) to avoid false negatives near midnight.
     bill_id = payment_payload["bill_id"]
     existing_payments = get_bill_payments(tokens=tokens)
-    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
+    cutoff_date = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
+    ).date()
     for pmt in existing_payments:
         txn_date_str = pmt.get("TxnDate", "")
         try:
-            txn_date = datetime.datetime.strptime(txn_date_str, "%Y-%m-%d").replace(
-                tzinfo=datetime.timezone.utc
-            )
+            txn_date = datetime.date.fromisoformat(txn_date_str)
         except ValueError:
             continue
-        if txn_date < cutoff:
+        if txn_date < cutoff_date:
             continue
         for line in pmt.get("Line", []):
             for linked in line.get("LinkedTxn", []):
