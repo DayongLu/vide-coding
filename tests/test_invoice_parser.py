@@ -162,3 +162,189 @@ def test_parse_invoice_openai_pdf_fallback():
 
     args = mock_openai.call_args[0]
     assert args[1] == "application/pdf"
+
+
+# ---------------------------------------------------------------------------
+# Anthropic content-block builder edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_build_anthropic_content_tiff_falls_back_to_text():
+    """TIFF images bypass the image block and send a text-only prompt."""
+    blocks = invoice_parser._build_anthropic_content(b"\x49\x49", "image/tiff")
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "text"
+    assert "TIFF" in blocks[0]["text"]
+
+
+def test_build_anthropic_content_jpg_normalized_to_jpeg():
+    """image/jpg is normalized to image/jpeg as required by the API."""
+    blocks = invoice_parser._build_anthropic_content(b"\xff\xd8\xff", "image/jpg")
+    image_block = next(b for b in blocks if b["type"] == "image")
+    assert image_block["source"]["media_type"] == "image/jpeg"
+
+
+# ---------------------------------------------------------------------------
+# Gemini provider — content routing
+# ---------------------------------------------------------------------------
+
+
+def _gemini_response(text: str):
+    resp = MagicMock()
+    resp.text = text
+    return resp
+
+
+def test_call_gemini_pdf_sends_inline_part():
+    """_call_gemini sends a PDF as an inline mime/data part."""
+    fake_model = MagicMock()
+    fake_model.generate_content.return_value = _gemini_response(_VALID_JSON)
+
+    with patch.dict("os.environ", {"LLM_PROVIDER": "gemini"}), \
+         patch("google.generativeai.GenerativeModel", return_value=fake_model):
+        invoice_parser.parse_invoice(b"%PDF fake", "application/pdf")
+
+    args = fake_model.generate_content.call_args[0][0]
+    # First arg is a list: [{mime_type, data}, prompt_text]
+    assert isinstance(args, list)
+    assert args[0]["mime_type"] == "application/pdf"
+    assert args[0]["data"] == b"%PDF fake"
+
+
+def test_call_gemini_jpg_normalized_to_jpeg():
+    """_call_gemini normalizes image/jpg → image/jpeg for the Gemini API."""
+    fake_model = MagicMock()
+    fake_model.generate_content.return_value = _gemini_response(_VALID_JSON)
+
+    with patch.dict("os.environ", {"LLM_PROVIDER": "gemini"}), \
+         patch("google.generativeai.GenerativeModel", return_value=fake_model):
+        invoice_parser.parse_invoice(b"\xff\xd8\xff", "image/jpg")
+
+    args = fake_model.generate_content.call_args[0][0]
+    assert args[0]["mime_type"] == "image/jpeg"
+
+
+def test_call_gemini_tiff_uses_text_fallback():
+    """_call_gemini uses a text-only fallback for TIFF (unsupported by Gemini)."""
+    fake_model = MagicMock()
+    fake_model.generate_content.return_value = _gemini_response(_VALID_JSON)
+
+    with patch.dict("os.environ", {"LLM_PROVIDER": "gemini"}), \
+         patch("google.generativeai.GenerativeModel", return_value=fake_model):
+        invoice_parser.parse_invoice(b"II*\x00", "image/tiff")
+
+    arg = fake_model.generate_content.call_args[0][0]
+    assert isinstance(arg, str)
+    assert "TIFF" in arg
+
+
+def test_call_gemini_text_input():
+    """_call_gemini sends plain text via a single-string prompt."""
+    fake_model = MagicMock()
+    fake_model.generate_content.return_value = _gemini_response(_VALID_JSON)
+
+    with patch.dict("os.environ", {"LLM_PROVIDER": "gemini"}), \
+         patch("google.generativeai.GenerativeModel", return_value=fake_model):
+        invoice_parser.parse_invoice("Invoice for $100", "text/plain")
+
+    arg = fake_model.generate_content.call_args[0][0]
+    assert isinstance(arg, str)
+    assert "Invoice for $100" in arg
+
+
+# ---------------------------------------------------------------------------
+# OpenAI provider — content routing
+# ---------------------------------------------------------------------------
+
+
+def _openai_response(text: str):
+    choice = MagicMock()
+    choice.message.content = text
+    resp = MagicMock()
+    resp.choices = [choice]
+    return resp
+
+
+def test_call_openai_image_sends_data_uri():
+    """_call_openai sends images as data: URIs in an image_url content block."""
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _openai_response(_VALID_JSON)
+
+    with patch.dict("os.environ", {"LLM_PROVIDER": "openai"}), \
+         patch("openai.OpenAI", return_value=fake_client):
+        invoice_parser.parse_invoice(b"\x89PNG", "image/png")
+
+    messages = fake_client.chat.completions.create.call_args.kwargs["messages"]
+    content_block = messages[0]["content"][0]
+    assert content_block["type"] == "image_url"
+    assert content_block["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_call_openai_pdf_uses_text_only_prompt():
+    """_call_openai falls back to a text-only prompt for PDFs (no inline upload)."""
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _openai_response(_VALID_JSON)
+
+    with patch.dict("os.environ", {"LLM_PROVIDER": "openai"}), \
+         patch("openai.OpenAI", return_value=fake_client):
+        invoice_parser.parse_invoice(b"%PDF fake", "application/pdf")
+
+    messages = fake_client.chat.completions.create.call_args.kwargs["messages"]
+    assert isinstance(messages[0]["content"], str)
+    assert "PDF document" in messages[0]["content"]
+
+
+def test_call_openai_text_input():
+    """_call_openai sends plain text body as a single-string content."""
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _openai_response(_VALID_JSON)
+
+    with patch.dict("os.environ", {"LLM_PROVIDER": "openai"}), \
+         patch("openai.OpenAI", return_value=fake_client):
+        invoice_parser.parse_invoice("Invoice from Acme", "text/plain")
+
+    messages = fake_client.chat.completions.create.call_args.kwargs["messages"]
+    assert "Invoice from Acme" in messages[0]["content"]
+
+
+# ---------------------------------------------------------------------------
+# Robustness
+# ---------------------------------------------------------------------------
+
+
+def test_parse_invoice_handles_non_list_line_items():
+    """parse_invoice coerces non-list line_items to an empty list."""
+    bad = {
+        "vendor_name": "X",
+        "invoice_number": "1",
+        "invoice_date": "2026-01-01",
+        "due_date": "2026-02-01",
+        "line_items": "not-a-list",
+        "total_amount": 10.0,
+        "currency": "USD",
+        "raw_text": "",
+    }
+    with patch("invoice_parser.anthropic.Anthropic") as MockAnthropic:
+        client = MockAnthropic.return_value
+        client.messages.create.return_value = _mock_claude_response(json.dumps(bad))
+        result = invoice_parser.parse_invoice("text", "text/plain")
+    assert result["line_items"] == []
+
+
+def test_parse_invoice_handles_null_total_amount():
+    """parse_invoice coerces null total_amount to 0.0 without raising."""
+    bad = {
+        "vendor_name": "X",
+        "invoice_number": None,
+        "invoice_date": None,
+        "due_date": None,
+        "line_items": [],
+        "total_amount": None,
+        "currency": "USD",
+        "raw_text": "",
+    }
+    with patch("invoice_parser.anthropic.Anthropic") as MockAnthropic:
+        client = MockAnthropic.return_value
+        client.messages.create.return_value = _mock_claude_response(json.dumps(bad))
+        result = invoice_parser.parse_invoice("text", "text/plain")
+    assert result["total_amount"] == 0.0
