@@ -49,6 +49,10 @@ finance-agent/
 
 ## Setup
 
+**Python 3.10+ is required** — the codebase uses PEP 604 union syntax (`dict | None`)
+and the FastAPI/Anthropic SDKs require modern type-hint support.
+Python 3.9 cannot import or run this project.
+
 ```bash
 # Primary venv (FastAPI backend + Flask app + CLI, Python 3.10+)
 python3 -m venv .venv
@@ -59,9 +63,6 @@ python3 src/qbo_auth.py               # OAuth flow — opens browser, saves toke
 # For MCP server (separate venv)
 python3.13 -m venv .venv-mcp
 .venv-mcp/bin/pip install mcp python-dotenv requests
-
-# For tests
-pip install -r tests/requirements.txt
 ```
 
 Required `src/.env` variables:
@@ -82,23 +83,12 @@ Required `src/.env` variables:
 ## Running
 
 ```bash
-# FastAPI backend (primary — SSE streaming, conversation history)
-source .venv/bin/activate
-uvicorn api.main:app --reload --app-dir src
-
-# Flask web UI (legacy)
-python3 src/app.py                                    # http://localhost:5001
-
-# CLI chat
-python3 src/chat.py
-
-# MCP server
-.venv-mcp/bin/python3.13 src/qbo_mcp_server.py        # stdio transport
-.venv-mcp/bin/python3.13 src/qbo_mcp_server.py --transport sse  # SSE on port 8080
-
-# Run tests (always use the project venv)
-source .venv/bin/activate
-python3 -m pytest tests/
+.venv/bin/python src/app.py                                    # Web UI at http://localhost:5001
+.venv/bin/python src/chat.py                                   # CLI chat
+.venv-mcp/bin/python src/qbo_mcp_server.py                     # MCP server (stdio)
+.venv-mcp/bin/python src/qbo_mcp_server.py --transport sse     # MCP server (SSE on port 8080)
+.venv/bin/python -m pytest                                     # Run tests
+.venv/bin/python -m pytest --cov=src --cov-report=term-missing # With coverage
 ```
 
 ## LLM Provider Abstraction
