@@ -30,29 +30,40 @@ Both `src/app.py` and `src/chat.py` define their own TOOLS list and `execute_too
 
 ## Setup
 
-```bash
-# For Flask app / CLI chat (Python 3.9+)
-pip install -r src/requirements.txt
-python3 src/qbo_auth.py               # OAuth flow — opens browser, saves tokens.json
+**Python 3.10+ is required** — the codebase uses PEP 604 union syntax (`dict | None`)
+and the FastAPI/Anthropic SDKs require modern type-hint support.
+Python 3.9 cannot import or run this project.
 
-# For MCP server (Python 3.10+ required by mcp SDK)
+```bash
+# Create the project virtualenv (Python 3.13 recommended)
+python3.13 -m venv .venv
+.venv/bin/pip install -r src/requirements.txt -r tests/requirements.txt
+
+# One-time QBO OAuth (opens browser, writes tokens.json)
+.venv/bin/python src/qbo_auth.py
+
+# One-time Gmail OAuth (opens browser, writes gmail_tokens.json)
+.venv/bin/python src/gmail_auth.py
+
+# Separate venv for the MCP server (mcp SDK has its own dep tree)
 python3.13 -m venv .venv-mcp
 .venv-mcp/bin/pip install mcp python-dotenv requests
-
-# For tests
-pip install -r tests/requirements.txt
 ```
+
+All tests and scripts must be run via `.venv/bin/python` — running with the
+system `python3` (often 3.9 on macOS) will fail at import time.
 
 Required `src/.env` variables: `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_REDIRECT_URI`, `QBO_ENVIRONMENT` (sandbox/production), `ANTHROPIC_API_KEY`.
 
 ## Running
 
 ```bash
-python3 src/app.py                                    # Web UI at http://localhost:5001
-python3 src/chat.py                                   # CLI chat
-.venv-mcp/bin/python3.13 src/qbo_mcp_server.py        # MCP server (stdio)
-.venv-mcp/bin/python3.13 src/qbo_mcp_server.py --transport sse  # MCP server (SSE on port 8080)
-python -m pytest tests/                                # Run tests
+.venv/bin/python src/app.py                                    # Web UI at http://localhost:5001
+.venv/bin/python src/chat.py                                   # CLI chat
+.venv-mcp/bin/python src/qbo_mcp_server.py                     # MCP server (stdio)
+.venv-mcp/bin/python src/qbo_mcp_server.py --transport sse     # MCP server (SSE on port 8080)
+.venv/bin/python -m pytest                                     # Run tests
+.venv/bin/python -m pytest --cov=src --cov-report=term-missing # With coverage
 ```
 
 ## Conventions
