@@ -282,9 +282,8 @@ def _extract_body_text(part: dict) -> str:
     mime_type = part.get("mimeType", "")
     body_data = part.get("body", {}).get("data", "")
 
-    if mime_type == "text/plain" and body_data:
-        raw = base64.urlsafe_b64decode(body_data + "==").decode("utf-8", errors="replace")
-        return raw
+    if body_data and mime_type in ("text/plain", "text/html"):
+        return base64.urlsafe_b64decode(body_data + "==").decode("utf-8", errors="replace")
 
     # Recurse into sub-parts (prefer text/plain, fallback to text/html)
     plain_text = ""
