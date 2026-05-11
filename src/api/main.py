@@ -27,6 +27,10 @@ sys.path.insert(0, os.path.dirname(__file__) + "/..")
 load_dotenv()
 
 import api.db as db_module
+
+# Load environment variables from .env
+load_dotenv()
+
 from api.errors import register_exception_handlers
 from api.logging_config import configure as configure_logging
 from api.routers import conversations, health

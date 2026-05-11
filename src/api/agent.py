@@ -1,22 +1,25 @@
 """
 Async streaming agent loop for the Finance Agent API.
 
-Calls the Anthropic API with SSE streaming, dispatches QBO tool calls via
-asyncio.to_thread(), persists messages to SQLite, and yields SSE-formatted
-event strings for the HTTP layer.
+Dispatches turns to LLM providers (Anthropic, Gemini, etc.), handles tool execution,
+persists messages to SQLite, and yields SSE-formatted events for the HTTP layer.
 """
 
 import asyncio
 import json
 import logging
+import os
 import sqlite3
 import time
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
+from typing import Any
 
-import anthropic
-
+from api.providers.base import BaseLLMProvider
+from api.providers.anthropic import AnthropicProvider
+from api.providers.gemini import GeminiProvider
+from api.providers.openai import OpenAIProvider
 from api.system_prompt import build_system_prompt
 from tools import TOOLS, execute_tool
 
@@ -29,15 +32,7 @@ def _now() -> str:
 
 
 def _sse(event: str, data: dict) -> str:
-    """Format a server-sent event string.
-
-    Args:
-        event: SSE event type.
-        data: JSON-serialisable payload dict.
-
-    Returns:
-        SSE-formatted string ending with a double newline.
-    """
+    """Format a server-sent event string."""
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
@@ -48,15 +43,7 @@ def _persist_message(
     content,
     is_internal: bool,
 ) -> None:
-    """Insert a message row into the database.
-
-    Args:
-        db: Open SQLite connection.
-        conv_id: Parent conversation UUID.
-        role: Message role ('user', 'assistant', 'tool_use', 'tool_result').
-        content: Message content (str or list of content blocks).
-        is_internal: True for tool_use/tool_result rows hidden from clients.
-    """
+    """Insert a message row into the database."""
     db.execute(
         """
         INSERT INTO messages (id, conversation_id, role, content_json, timestamp, is_internal)
@@ -73,27 +60,28 @@ def _persist_message(
     )
 
 
+def get_provider() -> BaseLLMProvider:
+    """Resolve the active LLM provider based on environment variables."""
+    provider_name = os.getenv("LLM_PROVIDER", "anthropic").lower()
+    
+    if provider_name == "anthropic":
+        return AnthropicProvider()
+    elif provider_name == "gemini":
+        return GeminiProvider()
+    elif provider_name == "openai":
+        return OpenAIProvider()
+    else:
+        logger.warning("Unknown provider '%s', falling back to Anthropic", provider_name)
+        return AnthropicProvider()
+
+
 async def run_agent_turn(
     conv_id: str,
     messages: list[dict],
     db: sqlite3.Connection,
 ) -> AsyncGenerator[str, None]:
-    """Run one agent turn with full tool-call loop, yielding SSE events.
-
-    Streams assistant text tokens, handles tool calls (dispatched in a
-    thread pool), persists all messages, and emits a final ``done`` event.
-    On any unhandled exception, emits an ``error`` SSE event instead of
-    propagating to the HTTP layer.
-
-    Args:
-        conv_id: Conversation UUID for message persistence.
-        messages: Full conversation history in Anthropic format.
-        db: Open SQLite connection for message persistence.
-
-    Yields:
-        SSE-formatted strings (``event: ...\\ndata: ...\\n\\n``).
-    """
-    client = anthropic.AsyncAnthropic()
+    """Run one agent turn with full tool-call loop, yielding SSE events."""
+    provider = get_provider()
     system_prompt = build_system_prompt()
     tools_called: list[str] = []
     full_text = ""
@@ -107,74 +95,34 @@ async def run_agent_turn(
             current_tool_uses: list[dict] = []
             text_buffer = ""
 
-            async with client.messages.stream(
-                model="claude-sonnet-4-20250514",
-                max_tokens=4096,
-                system=system_prompt,
-                tools=TOOLS,
-                messages=turn_messages,
-            ) as stream:
-                tool_input_buffer: dict[str, str] = {}  # tool_use id → partial JSON
-
-                async for event in stream:
-                    event_type = type(event).__name__
-
-                    if event_type == "ContentBlockStartEvent":
-                        block = event.content_block
-                        if block.type == "tool_use":
-                            tool_input_buffer[block.id] = ""
-                            current_tool_uses.append(
-                                {"id": block.id, "name": block.name, "input": {}}
-                            )
-                            yield _sse("tool_start", {"tool": block.name})
-
-                    elif event_type == "ContentBlockDeltaEvent":
-                        delta = event.delta
-                        if delta.type == "text_delta":
-                            text_buffer += delta.text
-                            full_text += delta.text
-                            yield _sse("token", {"text": delta.text})
-                        elif delta.type == "input_json_delta":
-                            # Find which tool_use this belongs to
-                            for tu in current_tool_uses:
-                                if tu["id"] == event.index or (
-                                    len(current_tool_uses) == 1
-                                ):
-                                    # Accumulate partial JSON — index-based matching
-                                    pass
-                            # Accumulate in the last opened tool use
-                            if current_tool_uses:
-                                last_id = current_tool_uses[-1]["id"]
-                                tool_input_buffer[last_id] = (
-                                    tool_input_buffer.get(last_id, "")
-                                    + delta.partial_json
-                                )
-
-                    elif event_type == "ContentBlockStopEvent":
-                        # If we just closed a tool_use block, parse the buffered input
-                        if current_tool_uses:
-                            last_tu = current_tool_uses[-1]
-                            if last_tu["input"] == {}:
-                                raw = tool_input_buffer.get(last_tu["id"], "{}")
-                                try:
-                                    last_tu["input"] = json.loads(raw) if raw else {}
-                                except json.JSONDecodeError:
-                                    last_tu["input"] = {}
-
-                # Collect the final message from the stream
-                final_msg = await stream.get_final_message()
-                assistant_content = [
-                    block.model_dump() if hasattr(block, "model_dump") else block
-                    for block in final_msg.content
-                ]
-                stop_reason = final_msg.stop_reason
+            async for event in provider.stream_turn(turn_messages, TOOLS, system_prompt):
+                event_type = event["type"]
+                
+                if event_type == "token":
+                    text_buffer += event["text"]
+                    full_text += event["text"]
+                    yield _sse("token", {"text": event["text"]})
+                
+                elif event_type == "tool_start":
+                    yield _sse("tool_start", {"tool": event["tool"]})
+                
+                elif event_type == "done":
+                    assistant_content = event["content"]
+                    stop_reason = event["stop_reason"]
+                    current_tool_uses = event["tool_calls"]
+                    logger.info("turn_complete stop_reason=%s blocks=%s", stop_reason, len(assistant_content))
+                
+                elif event_type == "error":
+                    yield _sse("error", event)
+                    return
 
             # Append assistant turn to in-memory history
             turn_messages.append({"role": "assistant", "content": assistant_content})
 
-            if stop_reason != "tool_use" or not current_tool_uses:
+            if not current_tool_uses:
+                logger.info("loop_exit tool_uses=0")
                 # No more tool calls — persist final assistant text and exit loop
-                _persist_message(db, conv_id, "assistant", text_buffer, is_internal=False)
+                _persist_message(db, conv_id, "assistant", assistant_content, is_internal=False)
                 db.execute(
                     "UPDATE conversations SET updated_at = ? WHERE id = ?",
                     (_now(), conv_id),

@@ -1,6 +1,6 @@
 # Finance Agent
 
-An accounts payable assistant that uses Claude to query QuickBooks Online data. Two interfaces: a Flask web chat UI and a standalone MCP server.
+An AI-powered accounts payable assistant that connects to QuickBooks Online data. Interfaces: a Flask web chat UI, a standalone MCP server, and a FastAPI backend with SSE streaming.
 
 ## Project Structure
 
@@ -10,23 +10,42 @@ finance-agent/
 │   ├── product/             # PRDs, user stories, requirements (PM owns)
 │   └── design/              # UX specs, wireframes, decisions (Design Manager owns)
 ├── src/
+│   ├── api/                 # FastAPI backend (primary interface)
+│   │   ├── main.py          # FastAPI app factory + startup
+│   │   ├── agent.py         # Async agent loop with SSE streaming
+│   │   ├── db.py            # SQLite layer (WAL mode, conversation persistence)
+│   │   ├── system_prompt.py # System prompt builder
+│   │   ├── logging_config.py # Structured JSON / text logging
+│   │   ├── providers/       # LLM provider abstraction layer
+│   │   │   ├── base.py      # BaseLLMProvider ABC
+│   │   │   ├── anthropic.py # Anthropic Claude implementation
+│   │   │   ├── gemini.py    # Google Gemini implementation
+│   │   │   └── openai.py    # OpenAI-compatible implementation (works with Ollama)
+│   │   └── routers/
+│   │       └── conversations.py  # /conversations CRUD + SSE streaming
 │   ├── app.py               # Flask web server (/chat, /reset endpoints)
 │   ├── chat.py              # Standalone CLI chat interface
-│   ├── qbo_mcp_server.py    # MCP server exposing 10 QBO tools
+│   ├── tools.py             # Single source of truth: TOOLS list + execute_tool()
+│   ├── qbo_mcp_server.py    # MCP server exposing 13 QBO tools
 │   ├── qbo_client.py        # QuickBooks Online API client
 │   ├── qbo_auth.py          # OAuth2 flow for QBO tokens
+│   ├── payment_tokens.py    # Thread-safe idempotency token store
 │   ├── templates/
 │   │   └── index.html       # Single-page chat UI
 │   ├── .env                 # Runtime config (gitignored)
 │   └── requirements.txt     # Source dependencies
 ├── tests/
-│   ├── qbo_test.py          # Integration tests
+│   ├── test_api_integration.py  # FastAPI endpoint integration tests
+│   ├── test_payment_tokens.py
+│   ├── test_qbo_client_bill_payment.py
+│   ├── test_mcp_bill_payment_tools.py
+│   ├── test_tools_parity.py
 │   └── requirements.txt     # Test dependencies (pytest, etc.)
 ├── .claude/agents/          # Agent role definitions
 └── CLAUDE.md
 ```
 
-Both `src/app.py` and `src/chat.py` define their own TOOLS list and `execute_tool()` dispatcher. The MCP server (`src/qbo_mcp_server.py`) replaces this pattern by importing `qbo_client` directly.
+`src/tools.py` is the single source of truth for all 13 QBO tool definitions and the `execute_tool()` dispatcher. Both `app.py` and `api/agent.py` import from it. The MCP server (`src/qbo_mcp_server.py`) imports `qbo_client` directly.
 
 ## Setup
 
@@ -35,25 +54,31 @@ and the FastAPI/Anthropic SDKs require modern type-hint support.
 Python 3.9 cannot import or run this project.
 
 ```bash
-# Create the project virtualenv (Python 3.13 recommended)
-python3.13 -m venv .venv
-.venv/bin/pip install -r src/requirements.txt -r tests/requirements.txt
+# Primary venv (FastAPI backend + Flask app + CLI, Python 3.10+)
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r src/requirements.txt
+python3 src/qbo_auth.py               # OAuth flow — opens browser, saves tokens.json
 
-# One-time QBO OAuth (opens browser, writes tokens.json)
-.venv/bin/python src/qbo_auth.py
-
-# One-time Gmail OAuth (opens browser, writes gmail_tokens.json)
-.venv/bin/python src/gmail_auth.py
-
-# Separate venv for the MCP server (mcp SDK has its own dep tree)
+# For MCP server (separate venv)
 python3.13 -m venv .venv-mcp
 .venv-mcp/bin/pip install mcp python-dotenv requests
 ```
 
-All tests and scripts must be run via `.venv/bin/python` — running with the
-system `python3` (often 3.9 on macOS) will fail at import time.
+Required `src/.env` variables:
 
-Required `src/.env` variables: `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_REDIRECT_URI`, `QBO_ENVIRONMENT` (sandbox/production), `ANTHROPIC_API_KEY`.
+| Variable | Required | Description |
+|---|---|---|
+| `QBO_CLIENT_ID` | Yes | Intuit OAuth2 client ID |
+| `QBO_CLIENT_SECRET` | Yes | Intuit OAuth2 client secret |
+| `QBO_REDIRECT_URI` | Yes | OAuth callback URL |
+| `QBO_ENVIRONMENT` | Yes | `sandbox` or `production` |
+| `ANTHROPIC_API_KEY` | For Anthropic | Claude API key |
+| `LLM_PROVIDER` | No | `anthropic` (default), `gemini`, or `openai` |
+| `GEMINI_API_KEY` | For Gemini | Google AI API key |
+| `OPENAI_API_KEY` | For OpenAI | OpenAI / Ollama API key |
+| `OPENAI_BASE_URL` | For Ollama | Base URL override (e.g., `http://localhost:11434/v1`) |
+| `OPENAI_MODEL` | For OpenAI | Model name (default: `gpt-4o`) |
 
 ## Running
 
@@ -66,11 +91,42 @@ Required `src/.env` variables: `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_REDIRE
 .venv/bin/python -m pytest --cov=src --cov-report=term-missing # With coverage
 ```
 
+## LLM Provider Abstraction
+
+The FastAPI agent uses a provider abstraction layer (`src/api/providers/`) so the agent loop is provider-agnostic. The active provider is selected at runtime via the `LLM_PROVIDER` environment variable.
+
+### How it works
+
+`BaseLLMProvider` (ABC in `providers/base.py`) defines a single method:
+
+```python
+async def stream_turn(messages, tools, system_prompt) -> AsyncGenerator[dict, None]:
+    ...
+```
+
+Each provider yields normalized event dicts:
+
+| Event type | Fields | Meaning |
+|---|---|---|
+| `token` | `text` | Streaming text chunk |
+| `tool_start` | `tool` | LLM requested a tool call |
+| `done` | `content`, `stop_reason`, `tool_calls` | Turn complete |
+| `error` | `error_code`, `message`, `recoverable` | Provider error |
+
+`get_provider()` in `agent.py` reads `LLM_PROVIDER` and returns the correct instance. Unknown values fall back to Anthropic with a warning.
+
+### Adding a new provider
+
+1. Create `src/api/providers/<name>.py` implementing `BaseLLMProvider`.
+2. Add a branch in `get_provider()` in `src/api/agent.py`.
+3. Add any required SDK to `src/requirements.txt`.
+4. Document the new env vars here.
+
 ## Conventions
 
-- Use `claude-sonnet-4-20250514` as the model for the agent's API calls.
+- Default model: `claude-sonnet-4-20250514` (Anthropic provider).
 - QBO client functions accept an optional `tokens` parameter (defaults to loading from `tokens.json`).
-- Keep tool definitions in sync between `app.py`, `chat.py`, and `qbo_mcp_server.py`.
+- `src/tools.py` is the single source of truth for tool definitions — do not duplicate in `app.py`, `chat.py`, or `agent.py`.
 - Never commit `src/.env` or `src/tokens.json` (both are gitignored).
 - Product documents go in `docs/product/`, design documents go in `docs/design/`.
 
